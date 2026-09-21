@@ -165,19 +165,17 @@ abstract class ScanManga :
             }
         }
 
-        return Observable.fromCallable { searchMangaWithWebView(query) }
+        return super.fetchSearchManga(page, query, filters)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = baseSearchUrl
             .toHttpUrl().newBuilder()
             .addQueryParameter("term", query)
-            .addQueryParameter("16", null)
             .build()
             .toString()
 
         val newHeaders = headers.newBuilder()
-            .set("User-Agent", MOBILE_USER_AGENT)
             .add("Content-type", "application/json; charset=UTF-8")
             .build()
 
@@ -185,8 +183,8 @@ abstract class ScanManga :
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
-        val json = response.body.string().trimStart()
-        if (json == "[]" || json.startsWith("<")) {
+        val json = response.body.string()
+        if (json == "[]") {
             return MangasPage(emptyList(), false)
         }
 
@@ -203,74 +201,6 @@ abstract class ScanManga :
         } ?: emptyList(),
         false,
     )
-
-    private fun searchMangaWithWebView(query: String): MangasPage {
-        val searchUrl = baseSearchUrl
-            .toHttpUrl().newBuilder()
-            .addQueryParameter("term", query)
-            .addQueryParameter("16", null)
-            .build()
-            .toString()
-        val encodedSearchUrl = Base64.encodeToString(searchUrl.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        val json = runWebViewProbe(
-            url = searchUrl,
-            script =
-            """
-                (function() {
-                    if (document.readyState !== 'complete' || location.search.includes('__cf_chl')) {
-                        return 'WAIT';
-                    }
-
-                    const body = document.body?.innerText?.trim() || '';
-                    if (body.startsWith('{') || body.startsWith('[')) {
-                        return 'DONE:' + btoa(unescape(encodeURIComponent(body)));
-                    }
-                    if (document.title.includes('Just a moment') || body.includes('Performing security verification')) {
-                        return 'WAIT';
-                    }
-
-                    /* Retry the API as a same-origin fetch after document navigation. */
-                    const fetchKey = '__scanMangaExtensionApiFetch';
-                    if (!window[fetchKey]) {
-                        const url = decodeURIComponent(escape(atob('$encodedSearchUrl')));
-                        window[fetchKey] = { done: false };
-                        fetch(url, {
-                            method: 'GET',
-                            credentials: 'include',
-                            headers: { 'Content-type': 'application/json; charset=UTF-8' }
-                        })
-                            .then(async response => ({
-                                status: response.status,
-                                url: response.url,
-                                body: await response.text()
-                            }))
-                            .then(data => window[fetchKey] = { done: true, data })
-                            .catch(error => window[fetchKey] = { done: true, error: String(error) });
-                        return 'WAIT';
-                    }
-
-                    const state = window[fetchKey];
-                    if (!state.done) return 'WAIT';
-                    if (state.error) {
-                        return 'ERROR:' + btoa(unescape(encodeURIComponent('Search API request failed: ' + state.error)));
-                    }
-
-                    const apiBody = (state.data.body || '').trim();
-                    if (apiBody.startsWith('{') || apiBody.startsWith('[')) {
-                        return 'DONE:' + btoa(unescape(encodeURIComponent(apiBody)));
-                    }
-
-                    const details = apiBody
-                        ? 'Unexpected search API response (HTTP ' + state.data.status + '): ' + apiBody.slice(0, 160)
-                        : 'Empty search API response (HTTP ' + state.data.status + ') at ' + state.data.url;
-                    return 'ERROR:' + btoa(unescape(encodeURIComponent(details)));
-                })();
-            """.trimIndent(),
-            timeoutSeconds = SEARCH_WEBVIEW_TIMEOUT_SECONDS,
-        ) ?: error("Timed out while searching Scan-Manga in the WebView")
-
-        return json.parseAs<MangaSearchDto>().toMangasPage()
-    }
 
     // Details
     override fun mangaDetailsParse(response: Response): SManga {
@@ -796,7 +726,6 @@ abstract class ScanManga :
         private const val WARMUP_SETTLE_MS = 200L
         private const val WARMUP_TIMEOUT_SECONDS = 8L
         private const val WEBVIEW_POLL_INTERVAL_MS = 500L
-        private const val SEARCH_WEBVIEW_TIMEOUT_SECONDS = 30L
         private const val CHAPTER_WEBVIEW_TIMEOUT_SECONDS = 30L
     }
 }

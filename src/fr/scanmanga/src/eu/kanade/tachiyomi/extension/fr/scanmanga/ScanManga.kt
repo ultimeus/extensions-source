@@ -233,24 +233,51 @@ abstract class ScanManga :
                     }
 
                     const body = document.body?.innerText?.trim() || '';
-                    if (!body) {
-                        const emptyKey = '__scanMangaExtensionEmptySince';
-                        if (!window[emptyKey]) {
-                            window[emptyKey] = Date.now();
-                            return 'WAIT';
-                        }
-                        if (Date.now() - window[emptyKey] < 5000) return 'WAIT';
-                        const details = 'Empty search response at ' + location.href +
-                            '; referrer=' + document.referrer + '; title=' + document.title;
-                        return 'ERROR:' + btoa(unescape(encodeURIComponent(details)));
-                    }
                     if (body.startsWith('{') || body.startsWith('[')) {
                         return 'DONE:' + btoa(unescape(encodeURIComponent(body)));
                     }
                     if (document.title.includes('Just a moment') || body.includes('Performing security verification')) {
                         return 'WAIT';
                     }
-                    return 'ERROR:' + btoa(unescape(encodeURIComponent('Unexpected search response: ' + body.slice(0, 160))));
+
+                    // Cloudflare accepts the top-level challenge on bqj but the API returns an
+                    // empty document for a navigation request. Retry it as the same-origin XHR
+                    // the site normally sends, now that the bqj challenge has established its
+                    // browser session.
+                    const fetchKey = '__scanMangaExtensionApiFetch';
+                    if (!window[fetchKey]) {
+                        const url = decodeURIComponent(escape(atob('$encodedSearchUrl')));
+                        window[fetchKey] = { done: false };
+                        fetch(url, {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: { 'Content-type': 'application/json; charset=UTF-8' }
+                        })
+                            .then(async response => ({
+                                status: response.status,
+                                url: response.url,
+                                body: await response.text()
+                            }))
+                            .then(data => window[fetchKey] = { done: true, data })
+                            .catch(error => window[fetchKey] = { done: true, error: String(error) });
+                        return 'WAIT';
+                    }
+
+                    const state = window[fetchKey];
+                    if (!state.done) return 'WAIT';
+                    if (state.error) {
+                        return 'ERROR:' + btoa(unescape(encodeURIComponent('Search API request failed: ' + state.error)));
+                    }
+
+                    const apiBody = (state.data.body || '').trim();
+                    if (apiBody.startsWith('{') || apiBody.startsWith('[')) {
+                        return 'DONE:' + btoa(unescape(encodeURIComponent(apiBody)));
+                    }
+
+                    const details = apiBody
+                        ? 'Unexpected search API response (HTTP ' + state.data.status + '): ' + apiBody.slice(0, 160)
+                        : 'Empty search API response (HTTP ' + state.data.status + ') at ' + state.data.url;
+                    return 'ERROR:' + btoa(unescape(encodeURIComponent(details)));
                 })();
             """.trimIndent(),
             timeoutSeconds = SEARCH_WEBVIEW_TIMEOUT_SECONDS,

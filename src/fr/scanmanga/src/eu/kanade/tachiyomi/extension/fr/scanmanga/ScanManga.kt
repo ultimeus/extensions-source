@@ -395,6 +395,9 @@ abstract class ScanManga :
                 lateinit var poll: Runnable
                 poll = Runnable {
                     if (completed.get()) return@Runnable
+                    // Navigation can discard a JavaScript callback. Keep the timer independent
+                    // so one missing callback cannot permanently stop the probe.
+                    mainHandler.postDelayed(poll, WEBVIEW_POLL_INTERVAL_MS)
 
                     // Suwayomi's Chromium adapter only returns multiline scripts when they
                     // contain an explicit return. Keeping this as a single expression works
@@ -416,7 +419,6 @@ abstract class ScanManga :
                                 completed.set(true)
                                 latch.countDown()
                             }
-                            else -> mainHandler.postDelayed(poll, WEBVIEW_POLL_INTERVAL_MS)
                         }
                     }
                 }

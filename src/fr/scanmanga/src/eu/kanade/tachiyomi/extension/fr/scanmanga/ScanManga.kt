@@ -218,6 +218,16 @@ abstract class ScanManga :
             """
                 (function() {
                     const key = '__scanMangaExtensionSearch';
+                    const readyKey = '__scanMangaExtensionSearchReady';
+                    if (document.readyState !== 'complete' || location.search.includes('__cf_chl')) {
+                        return 'WAIT';
+                    }
+                    if (!window[readyKey]) {
+                        window[readyKey] = Date.now();
+                        return 'WAIT';
+                    }
+                    if (Date.now() - window[readyKey] < 2000) return 'WAIT';
+
                     if (!window[key]) {
                         const query = decodeURIComponent(escape(atob('$encodedQuery')));
                         window[key] = { done: false };
@@ -227,8 +237,11 @@ abstract class ScanManga :
                             headers: { 'Content-type': 'application/json; charset=UTF-8' }
                         })
                             .then(response => {
-                                if (!response.ok) throw new Error('HTTP ' + response.status);
-                                return response.json();
+                                return response.text().then(body => {
+                                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                                    if (!body.trim()) throw new Error('HTTP ' + response.status + ' returned an empty body');
+                                    return JSON.parse(body);
+                                });
                             })
                             .then(data => window[key] = { done: true, data })
                             .catch(error => window[key] = { done: true, error: String(error) });

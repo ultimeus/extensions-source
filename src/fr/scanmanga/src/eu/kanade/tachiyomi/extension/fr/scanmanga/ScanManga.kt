@@ -211,8 +211,9 @@ abstract class ScanManga :
             .addQueryParameter("16", null)
             .build()
             .toString()
+        val encodedSearchUrl = Base64.encodeToString(searchUrl.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         val json = runWebViewProbe(
-            url = searchUrl,
+            url = "$baseUrl/",
             script =
             """
                 (function() {
@@ -226,8 +227,23 @@ abstract class ScanManga :
                     }
                     if (Date.now() - window[readyKey] < 2000) return 'WAIT';
 
+                    if (location.hostname !== 'bqj.$domain') {
+                        location.assign(decodeURIComponent(escape(atob('$encodedSearchUrl'))));
+                        return 'WAIT';
+                    }
+
                     const body = document.body?.innerText?.trim() || '';
-                    if (!body) return 'WAIT';
+                    if (!body) {
+                        const emptyKey = '__scanMangaExtensionEmptySince';
+                        if (!window[emptyKey]) {
+                            window[emptyKey] = Date.now();
+                            return 'WAIT';
+                        }
+                        if (Date.now() - window[emptyKey] < 5000) return 'WAIT';
+                        const details = 'Empty search response at ' + location.href +
+                            '; referrer=' + document.referrer + '; title=' + document.title;
+                        return 'ERROR:' + btoa(unescape(encodeURIComponent(details)));
+                    }
                     if (body.startsWith('{') || body.startsWith('[')) {
                         return 'DONE:' + btoa(unescape(encodeURIComponent(body)));
                     }

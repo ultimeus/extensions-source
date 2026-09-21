@@ -165,13 +165,7 @@ abstract class ScanManga :
             }
         }
 
-        return super.fetchSearchManga(page, query, filters).flatMap { result ->
-            if (result.mangas.isNotEmpty()) {
-                Observable.just(result)
-            } else {
-                Observable.fromCallable { searchMangaWithWebView(query) }
-            }
-        }
+        return Observable.fromCallable { searchMangaWithWebView(query) }
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -211,13 +205,17 @@ abstract class ScanManga :
     )
 
     private fun searchMangaWithWebView(query: String): MangasPage {
-        val encodedQuery = Base64.encodeToString(query.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val searchUrl = baseSearchUrl
+            .toHttpUrl().newBuilder()
+            .addQueryParameter("term", query)
+            .addQueryParameter("16", null)
+            .build()
+            .toString()
         val json = runWebViewProbe(
-            url = "$baseUrl/",
+            url = searchUrl,
             script =
             """
                 (function() {
-                    const key = '__scanMangaExtensionSearch';
                     const readyKey = '__scanMangaExtensionSearchReady';
                     if (document.readyState !== 'complete' || location.search.includes('__cf_chl')) {
                         return 'WAIT';
@@ -228,30 +226,15 @@ abstract class ScanManga :
                     }
                     if (Date.now() - window[readyKey] < 2000) return 'WAIT';
 
-                    if (!window[key]) {
-                        const query = decodeURIComponent(escape(atob('$encodedQuery')));
-                        window[key] = { done: false };
-                        fetch('https://bqj.$domain/search/quick.json?term=' + encodeURIComponent(query) + '&16', {
-                            method: 'GET',
-                            credentials: 'omit',
-                            headers: { 'Content-type': 'application/json; charset=UTF-8' }
-                        })
-                            .then(response => {
-                                return response.text().then(body => {
-                                    if (!response.ok) throw new Error('HTTP ' + response.status);
-                                    if (!body.trim()) throw new Error('HTTP ' + response.status + ' returned an empty body');
-                                    return JSON.parse(body);
-                                });
-                            })
-                            .then(data => window[key] = { done: true, data })
-                            .catch(error => window[key] = { done: true, error: String(error) });
+                    const body = document.body?.innerText?.trim() || '';
+                    if (!body) return 'WAIT';
+                    if (body.startsWith('{') || body.startsWith('[')) {
+                        return 'DONE:' + btoa(unescape(encodeURIComponent(body)));
+                    }
+                    if (document.title.includes('Just a moment') || body.includes('Performing security verification')) {
                         return 'WAIT';
                     }
-
-                    const state = window[key];
-                    if (!state.done) return 'WAIT';
-                    if (state.error) return 'ERROR:' + btoa(state.error);
-                    return 'DONE:' + btoa(unescape(encodeURIComponent(JSON.stringify(state.data))));
+                    return 'ERROR:' + btoa(unescape(encodeURIComponent('Unexpected search response: ' + body.slice(0, 160))));
                 })();
             """.trimIndent(),
             timeoutSeconds = SEARCH_WEBVIEW_TIMEOUT_SECONDS,

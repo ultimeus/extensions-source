@@ -229,10 +229,7 @@ abstract class ScanManga :
                         return 'WAIT';
                     }
 
-                    // Cloudflare accepts the top-level challenge on bqj but the API returns an
-                    // empty document for a navigation request. Retry it as the same-origin XHR
-                    // the site normally sends, now that the bqj challenge has established its
-                    // browser session.
+                    /* Retry the API as a same-origin fetch after document navigation. */
                     const fetchKey = '__scanMangaExtensionApiFetch';
                     if (!window[fetchKey]) {
                         const url = decodeURIComponent(escape(atob('$encodedSearchUrl')));

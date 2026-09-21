@@ -213,22 +213,11 @@ abstract class ScanManga :
             .toString()
         val encodedSearchUrl = Base64.encodeToString(searchUrl.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         val json = runWebViewProbe(
-            url = "$baseUrl/",
+            url = searchUrl,
             script =
             """
                 (function() {
-                    const readyKey = '__scanMangaExtensionSearchReady';
                     if (document.readyState !== 'complete' || location.search.includes('__cf_chl')) {
-                        return 'WAIT';
-                    }
-                    if (!window[readyKey]) {
-                        window[readyKey] = Date.now();
-                        return 'WAIT';
-                    }
-                    if (Date.now() - window[readyKey] < 2000) return 'WAIT';
-
-                    if (location.hostname !== 'bqj.$domain') {
-                        location.assign(decodeURIComponent(escape(atob('$encodedSearchUrl'))));
                         return 'WAIT';
                     }
 

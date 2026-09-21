@@ -24,6 +24,8 @@ import keiyoushi.utils.applicationContext
 import keiyoushi.utils.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import okhttp3.CookieJar
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -169,7 +171,7 @@ abstract class ScanManga :
             if (result.mangas.isNotEmpty()) {
                 Observable.just(result)
             } else {
-                Observable.fromCallable { searchMangaWithWebView(query) }
+                Observable.fromCallable { searchMangaWithFlareSolverr(query) }
             }
         }
     }
@@ -210,38 +212,55 @@ abstract class ScanManga :
         false,
     )
 
-    private fun searchMangaWithWebView(query: String): MangasPage {
+    private fun searchMangaWithFlareSolverr(query: String): MangasPage {
         val searchUrl = "$baseUrl/scanlation/liste_series.html"
             .toHttpUrl()
             .newBuilder()
             .addQueryParameter("q", query)
             .build()
             .toString()
-        val json = runWebViewProbe(
-            url = searchUrl,
-            script =
-            """
-                (function() {
-                    const container = document.querySelector('#contenu_lettre_id');
-                    if (!container?.querySelector('.raw_resrc')) return 'WAIT';
-
-                    const mangas = Array.from(container.querySelectorAll('a.texte_manga[href]')).map(link => ({
-                        title: link.querySelector('.hover_text_manga')?.firstChild?.textContent.trim()
-                            || link.textContent.trim(),
-                        url: link.href
-                    }));
-                    return 'DONE:' + btoa(unescape(encodeURIComponent(JSON.stringify(mangas))));
-                })();
-            """.trimIndent(),
-            timeoutSeconds = SEARCH_WEBVIEW_TIMEOUT_SECONDS,
-        ) ?: error("Timed out while searching Scan-Manga in the WebView")
-
-        val mangas = json.parseAs<List<WebViewMangaDto>>().map { item ->
-            SManga.create().apply {
-                title = item.title
-                setUrlWithoutDomain(item.url)
-            }
+        val flareSolverrUrl = preferences.getString(FLARESOLVERR_URL_PREF, DEFAULT_FLARESOLVERR_URL)
+            ?.trim()
+            ?.trimEnd('/')
+            .orEmpty()
+        if (flareSolverrUrl.isEmpty()) {
+            error("Configure the FlareSolverr URL in the Scan-Manga extension settings")
         }
+
+        val requestJson = Json.encodeToString(
+            FlareSolverrRequest(
+                url = searchUrl,
+                maxTimeout = FLARESOLVERR_TIMEOUT_MS,
+                waitInSeconds = FLARESOLVERR_SEARCH_WAIT_SECONDS,
+            ),
+        )
+        val request = POST(
+            "$flareSolverrUrl/v1",
+            Headers.headersOf("Content-Type", "application/json"),
+            requestJson.toRequestBody("application/json".toMediaType()),
+        )
+        val renderedHtml = client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("FlareSolverr returned HTTP ${response.code}")
+            }
+            val result = response.body.string().parseAs<FlareSolverrResponse>()
+            if (result.status != "ok") {
+                error("FlareSolverr failed: ${result.message}")
+            }
+            result.solution.response ?: error("FlareSolverr returned an empty search page")
+        }
+
+        val document = Jsoup.parse(renderedHtml, searchUrl)
+        val mangas = document.select("#contenu_lettre_id a.texte_manga[href]")
+            .distinctBy { it.absUrl("href") }
+            .map { link ->
+                SManga.create().apply {
+                    title = link.selectFirst(".hover_text_manga")?.text()?.takeIf { it.isNotEmpty() }
+                        ?: link.text()
+                    setUrlWithoutDomain(link.absUrl("href"))
+                }
+            }
+
         return MangasPage(mangas, false)
     }
 
@@ -719,6 +738,15 @@ abstract class ScanManga :
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
+            key = FLARESOLVERR_URL_PREF
+            title = "FlareSolverr URL"
+            summary = "FlareSolverr address used for search (for example http://flaresolverr:8191)"
+            setDefaultValue(DEFAULT_FLARESOLVERR_URL)
+            dialogTitle = "FlareSolverr URL"
+            dialogMessage = "Enter the FlareSolverr URL reachable from Suwayomi. Leave blank to disable the search fallback."
+        }.also { screen.addPreference(it) }
+
+        EditTextPreference(screen.context).apply {
             key = "gpu_renderer"
             title = "Unmasked GPU renderer"
             summary =
@@ -746,6 +774,10 @@ abstract class ScanManga :
         private const val MOBILE_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private val MANGA_PATH_REGEX = Regex("""/\d+(?:-\d+)?/[^/]+\.html""")
+        private const val FLARESOLVERR_URL_PREF = "flaresolverr_url"
+        private const val DEFAULT_FLARESOLVERR_URL = "http://flaresolverr:8191"
+        private const val FLARESOLVERR_TIMEOUT_MS = 45_000
+        private const val FLARESOLVERR_SEARCH_WAIT_SECONDS = 5
         private val HUNTER_OBFUSCATION_REGEX = Regex(
             """eval\s*\(\s*(?:/\*.*?\*/\s*)?function\s*\(\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*(?:,\s*[^)]+)?\)\s*\{\s*.*?\s*\}\s*\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)""",
             RegexOption.DOT_MATCHES_ALL,
@@ -761,7 +793,6 @@ abstract class ScanManga :
         private const val WARMUP_SETTLE_MS = 200L
         private const val WARMUP_TIMEOUT_SECONDS = 8L
         private const val WEBVIEW_POLL_INTERVAL_MS = 500L
-        private const val SEARCH_WEBVIEW_TIMEOUT_SECONDS = 30L
         private const val CHAPTER_WEBVIEW_TIMEOUT_SECONDS = 30L
     }
 }

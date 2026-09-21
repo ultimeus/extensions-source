@@ -47,7 +47,21 @@ class WebViewChapterDto(
 )
 
 @Serializable
-class WebViewMangaDto(
-    val title: String,
+class FlareSolverrRequest(
+    val cmd: String = "request.get",
     val url: String,
+    val maxTimeout: Int,
+    val waitInSeconds: Int,
+)
+
+@Serializable
+class FlareSolverrResponse(
+    val solution: FlareSolverrSolution,
+    val status: String,
+    val message: String,
+)
+
+@Serializable
+class FlareSolverrSolution(
+    val response: String? = null,
 )

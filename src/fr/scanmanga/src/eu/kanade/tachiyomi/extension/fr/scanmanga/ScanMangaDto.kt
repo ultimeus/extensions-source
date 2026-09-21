@@ -48,7 +48,7 @@ class WebViewChapterDto(
 
 @Serializable
 class FlareSolverrRequest(
-    val cmd: String = "request.get",
+    val cmd: String,
     val url: String,
     val maxTimeout: Int,
     val waitInSeconds: Int,

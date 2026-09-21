@@ -229,6 +229,7 @@ abstract class ScanManga :
 
         val requestJson = Json.encodeToString(
             FlareSolverrRequest(
+                cmd = "request.get",
                 url = searchUrl,
                 maxTimeout = FLARESOLVERR_TIMEOUT_MS,
                 waitInSeconds = FLARESOLVERR_SEARCH_WAIT_SECONDS,

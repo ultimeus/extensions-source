@@ -365,6 +365,7 @@ abstract class ScanManga :
                 val webView = WebView(applicationContext).also { webViewReference.set(it) }
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
+                webView.settings.userAgentString = MOBILE_USER_AGENT
 
                 lateinit var poll: Runnable
                 poll = Runnable {

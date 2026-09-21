@@ -45,23 +45,3 @@ class WebViewChapterDto(
     val name: String,
     val url: String,
 )
-
-@Serializable
-class FlareSolverrRequest(
-    val cmd: String,
-    val url: String,
-    val maxTimeout: Int,
-    val waitInSeconds: Int,
-)
-
-@Serializable
-class FlareSolverrResponse(
-    val solution: FlareSolverrSolution,
-    val status: String,
-    val message: String,
-)
-
-@Serializable
-class FlareSolverrSolution(
-    val response: String? = null,
-)

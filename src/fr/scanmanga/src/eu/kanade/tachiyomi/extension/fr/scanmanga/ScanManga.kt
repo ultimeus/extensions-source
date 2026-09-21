@@ -24,8 +24,6 @@ import keiyoushi.utils.applicationContext
 import keiyoushi.utils.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import okhttp3.CookieJar
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -171,7 +169,7 @@ abstract class ScanManga :
             if (result.mangas.isNotEmpty()) {
                 Observable.just(result)
             } else {
-                Observable.fromCallable { searchMangaWithFlareSolverr(query) }
+                Observable.fromCallable { searchMangaWithWebView(query) }
             }
         }
     }
@@ -212,57 +210,41 @@ abstract class ScanManga :
         false,
     )
 
-    private fun searchMangaWithFlareSolverr(query: String): MangasPage {
-        val searchUrl = "$baseUrl/scanlation/liste_series.html"
-            .toHttpUrl()
-            .newBuilder()
-            .addQueryParameter("q", query)
-            .build()
-            .toString()
-        val flareSolverrUrl = preferences.getString(FLARESOLVERR_URL_PREF, DEFAULT_FLARESOLVERR_URL)
-            ?.trim()
-            ?.trimEnd('/')
-            .orEmpty()
-        if (flareSolverrUrl.isEmpty()) {
-            error("Configure the FlareSolverr URL in the Scan-Manga extension settings")
-        }
+    private fun searchMangaWithWebView(query: String): MangasPage {
+        val encodedQuery = Base64.encodeToString(query.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val json = runWebViewProbe(
+            url = "$baseUrl/",
+            script =
+            """
+                (function() {
+                    const key = '__scanMangaExtensionSearch';
+                    if (!window[key]) {
+                        const query = decodeURIComponent(escape(atob('$encodedQuery')));
+                        window[key] = { done: false };
+                        fetch('https://bqj.$domain/search/quick.json?term=' + encodeURIComponent(query) + '&16', {
+                            method: 'GET',
+                            credentials: 'omit',
+                            headers: { 'Content-type': 'application/json; charset=UTF-8' }
+                        })
+                            .then(response => {
+                                if (!response.ok) throw new Error('HTTP ' + response.status);
+                                return response.json();
+                            })
+                            .then(data => window[key] = { done: true, data })
+                            .catch(error => window[key] = { done: true, error: String(error) });
+                        return 'WAIT';
+                    }
 
-        val requestJson = Json.encodeToString(
-            FlareSolverrRequest(
-                cmd = "request.get",
-                url = searchUrl,
-                maxTimeout = FLARESOLVERR_TIMEOUT_MS,
-                waitInSeconds = FLARESOLVERR_SEARCH_WAIT_SECONDS,
-            ),
-        )
-        val request = POST(
-            "$flareSolverrUrl/v1",
-            Headers.headersOf("Content-Type", "application/json"),
-            requestJson.toRequestBody("application/json".toMediaType()),
-        )
-        val renderedHtml = client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("FlareSolverr returned HTTP ${response.code}")
-            }
-            val result = response.body.string().parseAs<FlareSolverrResponse>()
-            if (result.status != "ok") {
-                error("FlareSolverr failed: ${result.message}")
-            }
-            result.solution.response ?: error("FlareSolverr returned an empty search page")
-        }
+                    const state = window[key];
+                    if (!state.done) return 'WAIT';
+                    if (state.error) return 'ERROR:' + btoa(state.error);
+                    return 'DONE:' + btoa(unescape(encodeURIComponent(JSON.stringify(state.data))));
+                })();
+            """.trimIndent(),
+            timeoutSeconds = SEARCH_WEBVIEW_TIMEOUT_SECONDS,
+        ) ?: error("Timed out while searching Scan-Manga in the WebView")
 
-        val document = Jsoup.parse(renderedHtml, searchUrl)
-        val mangas = document.select("#contenu_lettre_id a.texte_manga[href]")
-            .distinctBy { it.absUrl("href") }
-            .map { link ->
-                SManga.create().apply {
-                    title = link.selectFirst(".hover_text_manga")?.text()?.takeIf { it.isNotEmpty() }
-                        ?: link.text()
-                    setUrlWithoutDomain(link.absUrl("href"))
-                }
-            }
-
-        return MangasPage(mangas, false)
+        return json.parseAs<MangaSearchDto>().toMangasPage()
     }
 
     // Details
@@ -421,6 +403,11 @@ abstract class ScanManga :
                     }
                 }
                 webView.loadUrl(url)
+                mainHandler.postDelayed({
+                    if (pollStarted.compareAndSet(false, true)) {
+                        poll.run()
+                    }
+                }, WEBVIEW_POLL_INTERVAL_MS)
             }.onFailure {
                 completed.set(true)
                 latch.countDown()
@@ -739,15 +726,6 @@ abstract class ScanManga :
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
-            key = FLARESOLVERR_URL_PREF
-            title = "FlareSolverr URL"
-            summary = "FlareSolverr address used for search (for example http://flaresolverr:8191)"
-            setDefaultValue(DEFAULT_FLARESOLVERR_URL)
-            dialogTitle = "FlareSolverr URL"
-            dialogMessage = "Enter the FlareSolverr URL reachable from Suwayomi. Leave blank to disable the search fallback."
-        }.also { screen.addPreference(it) }
-
-        EditTextPreference(screen.context).apply {
             key = "gpu_renderer"
             title = "Unmasked GPU renderer"
             summary =
@@ -775,10 +753,6 @@ abstract class ScanManga :
         private const val MOBILE_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private val MANGA_PATH_REGEX = Regex("""/\d+(?:-\d+)?/[^/]+\.html""")
-        private const val FLARESOLVERR_URL_PREF = "flaresolverr_url"
-        private const val DEFAULT_FLARESOLVERR_URL = "http://flaresolverr:8191"
-        private const val FLARESOLVERR_TIMEOUT_MS = 45_000
-        private const val FLARESOLVERR_SEARCH_WAIT_SECONDS = 5
         private val HUNTER_OBFUSCATION_REGEX = Regex(
             """eval\s*\(\s*(?:/\*.*?\*/\s*)?function\s*\(\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*(?:,\s*[^)]+)?\)\s*\{\s*.*?\s*\}\s*\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)""",
             RegexOption.DOT_MATCHES_ALL,
@@ -794,6 +768,7 @@ abstract class ScanManga :
         private const val WARMUP_SETTLE_MS = 200L
         private const val WARMUP_TIMEOUT_SECONDS = 8L
         private const val WEBVIEW_POLL_INTERVAL_MS = 500L
+        private const val SEARCH_WEBVIEW_TIMEOUT_SECONDS = 30L
         private const val CHAPTER_WEBVIEW_TIMEOUT_SECONDS = 30L
     }
 }
